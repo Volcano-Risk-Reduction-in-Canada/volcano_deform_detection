@@ -15,6 +15,7 @@ import csv
 import glob
 import os
 import time
+import math
 
 import numpy as np
 import pandas as pd
@@ -62,11 +63,17 @@ def main():
     spatial_reference = osr.SpatialReference()
     spatial_reference.ImportFromEPSG(epsg_code)
 
+    resolution = 5  # resolution in meters
+    # Conversion factor for latitude (100 meters to degrees)
+    lat_change = resolution / 111000  # 1 degree latitude ≈ 111 km
+
     # Resample image to 100m x 100m equivalent decimel degrees
     warp_options = gdal.WarpOptions(
         format='MEM',
-        xRes=5,
-        yRes=5,
+        # xRes=lat_change,
+        # yRes=lat_change,
+        xRes=resolution,
+        yRes=resolution,
         dstSRS=f'+init=epsg:{epsg_code}',
         srcNodata=0,
         resampleAlg=gdal.gdalconst.GRA_Average,
