@@ -27,7 +27,7 @@ from scipy.stats import norm
 from skimage import morphology
 
 
-def run_volcano_deformation_detection(image_file_name, site, beam, model, latlong, start_res, end_res):
+def run_volcano_deformation_detection(image_file_name, site, beam, model, latlong, first_round):
     """
     Run Volcano Deformation Detection
     
@@ -42,6 +42,16 @@ def run_volcano_deformation_detection(image_file_name, site, beam, model, latlon
     image_name = image_file_name.split('.')[0]
     image_path = f"images/{site}/{beam}/{image_file_name}"
     output_directory = f"probability_map/{site}/{beam}/{image_name}/{'latlong' if latlong else 'utm'}/{'m1' if model == 'models/model1.pd' else 'm2'}"
+    resolution_array_full = (
+        np.linspace(0.0001, 0.01, 10).tolist()
+        if latlong
+        else [i for i in range(5,105, 5)]
+    )
+    resolution_array = (
+        resolution_array_full[:len(resolution_array_full) // 2]
+        if first_round
+        else resolution_array_full[len(resolution_array_full) // 2:]
+    )
 
     start = time.time()
 
@@ -84,22 +94,19 @@ def run_volcano_deformation_detection(image_file_name, site, beam, model, latlon
         x = sess.graph.get_tensor_by_name('data:0')
         out = sess.graph.get_tensor_by_name('softmax:0')
 
-        for resolution in range(start_res,end_res,5):
+        for resolution in resolution_array:
             print(
                 f"RUNNING Model {'1' if model == 'models/model1.pd' else '2'} "
                 f"{'Latitude/Longitude' if latlong else 'UTM'} - Resolution {resolution}"
             )
             os.makedirs(f"{output_directory}/{resolution}", exist_ok=True)
 
-            # Conversion factor for latitude (100 meters to degrees)
-            lat_change = resolution / 111000  # 1 degree latitude ≈ 111 km
-
             # Resample image to 100m x 100m equivalent decimel degrees
             warp_options = gdal.WarpOptions(
                 format='MEM',
-                xRes=lat_change if latlong else resolution,
-                yRes=lat_change if latlong else resolution,
-                dstSRS=None if latlong else f'+init=epsg:{epsg_code}',
+                xRes=resolution,
+                yRes=resolution,
+                dstSRS=f'+init=epsg:{4326}' if latlong else f'+init=epsg:{epsg_code}',
                 srcNodata=0,
                 resampleAlg=gdal.gdalconst.GRA_Average,
             )
@@ -150,7 +157,7 @@ def run_volcano_deformation_detection(image_file_name, site, beam, model, latlon
             # Normalised weight
             probMap /= weightMap
 
-            process_output_files(image_name, img_array, probMap, f"{output_directory}/{resolution}", warp_ds)
+            process_output_files(image_name, img_array, probMap, f"{output_directory}/{resolution}", warp_ds, resolution)
 
             endt = time.time()
             print("time elapsed:" + str(endt - start))
@@ -161,22 +168,33 @@ def run_volcano_deformation_detection(image_file_name, site, beam, model, latlon
             # Force garbage collection
             gc.collect()
 
-def process_output_files(image_name, img_array, probMap, output_directory, warp_ds):
+def process_output_files(image_name, img_array, probMap, output_directory, warp_ds, resolution):
     """Helper function to process and write output files."""
-    file=open(
-        os.path.join(
-            output_directory,
-            f'{image_name}_probability.csv'
-        ),
-        'w',
-        newline=''
-    )
-    writer = csv.writer(file)
+    # Set the file path
+    file_path = os.path.join(output_directory, f'{image_name}_probability.csv')
+
+    # Open file in append mode
+    with open(file_path, 'a', newline='') as file:
+        writer = csv.writer(file)
+        
+        # Write header if file is new
+        if os.stat(file_path).st_size == 0:
+            writer.writerow(["Resolution", "Max Probability", "Percent Above 50%", "Percent Above 80%"])
     
-    # record max prob
-    filename = image_name
-    writer.writerow([filename,
-                    probMap.max()])
+     # Calculate percentages of pixels above 50% and 80% probability
+    total_pixels = probMap.size
+    above_50_percent = np.sum(probMap > 0.5)
+    above_80_percent = np.sum(probMap > 0.8)
+
+    percent_above_50 = (above_50_percent / total_pixels) * 100
+    percent_above_80 = (above_80_percent / total_pixels) * 100
+
+    writer.writerow([
+        resolution, 
+        probMap.max(),
+        percent_above_50,
+        percent_above_80
+    ])
 
     if probMap.max() > 0.1:
         im_scale = img_array/255.

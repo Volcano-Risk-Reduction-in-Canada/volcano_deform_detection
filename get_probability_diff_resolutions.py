@@ -21,8 +21,7 @@ def main():
         args.beam,
         "models/model1.pd",
         True,
-        5,
-        50
+        True
     )
     run_volcano_deformation_detection(
         args.image_name,
@@ -30,8 +29,7 @@ def main():
         args.beam,
         "models/model1.pd",
         True,
-        50,
-        105
+        False
     )
     endt = time.time()
     logging.debug(f"Time elapsed for MODEL 1 - Latitude/Longitude: {endt - start} seconds")
@@ -45,8 +43,7 @@ def main():
         args.beam,
         "models/model1.pd",
         False,
-        5,
-        50
+        True
     )
     run_volcano_deformation_detection(
         args.image_name,
@@ -54,8 +51,7 @@ def main():
         args.beam,
         "models/model1.pd",
         False,
-        50,
-        105
+        False
     )
     endt = time.time()
     logging.debug(f"Time elapsed for MODEL 1 - UTM: {endt - start} seconds")
@@ -69,8 +65,7 @@ def main():
         args.beam,
         "models/model2.pd",
         True,
-        5,
-        50
+        True
     )
     run_volcano_deformation_detection(
         args.image_name,
@@ -78,8 +73,7 @@ def main():
         args.beam,
         "models/model2.pd",
         True,
-        50,
-        105
+        False
     )
     endt = time.time()
     logging.debug(f"Time elapsed for MODEL 2 - Latitude/Longitude: {endt - start} seconds")
@@ -93,8 +87,7 @@ def main():
         args.beam,
         "models/model2.pd",
         False,
-        5,
-        50
+        True
     )
     run_volcano_deformation_detection(
         args.image_name,
@@ -102,8 +95,7 @@ def main():
         args.beam,
         "models/model2.pd",
         False,
-        50,
-        105
+        False
     )
     endt = time.time()
     logging.debug(f"Time elapsed for MODEL 2 - UTM: {endt - start} seconds")
