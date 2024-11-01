@@ -25,6 +25,8 @@ import tensorflow as tf
 from osgeo import gdal, osr
 from scipy.stats import norm
 from skimage import morphology
+from scipy.ndimage import zoom
+from PIL import Image
 
 
 def run_volcano_deformation_detection(image_file_name, site, beam, model, latlong, first_round):
@@ -43,7 +45,7 @@ def run_volcano_deformation_detection(image_file_name, site, beam, model, latlon
     image_path = f"images/{site}/{beam}/{image_file_name}"
     output_directory = f"probability_map/{site}/{beam}/{image_name}/{'latlong' if latlong else 'utm'}/{'m1' if model == 'models/model1.pd' else 'm2'}"
     resolution_array_full = (
-        np.linspace(0.0001, 0.01, 10).tolist()
+        np.linspace(0.00005, 0.0015, 10).tolist()
         if latlong
         else [i for i in range(5,105, 5)]
     )
@@ -110,9 +112,7 @@ def run_volcano_deformation_detection(image_file_name, site, beam, model, latlon
                 srcNodata=0,
                 resampleAlg=gdal.gdalconst.GRA_Average,
             )
-            warp_ds = gdal.Warp('',
-                                ds,
-                                options=warp_options)
+            warp_ds = gdal.Warp('', ds, options=warp_options)
             img_array = warp_ds.ReadAsArray()
             img_array [img_array == 0] = np.nan
             mask  = img_array == 0
@@ -120,44 +120,42 @@ def run_volcano_deformation_detection(image_file_name, site, beam, model, latlon
             mask  = morphology.binary_closing(~mask, seedmask)
 
             # convert from phase raster to grayscale image
-            img_array = (img_array + np.pi)/(2*np.pi)*255
+            img_array = (img_array + np.pi)/(2*np.pi) * 255
             img_array = np.dstack((img_array, img_array, img_array))
 
             # subtract ImageNet mean
             img = img_array - imagenet_mean
 
             # break image into overlapping patches and run through model
-            himg = img.shape[0]
-            wimg = img.shape[1]
-            weightMap = np.zeros((himg,wimg),np.float32) + 0.00001
-            probMap = np.zeros((himg,wimg),np.float32)
+            himg, wimg = img.shape[:2]
+            weightMap = np.zeros((himg, wimg), np.float32) + 0.00001
+            probMap = np.zeros((himg,wimg), np.float32)
 
-            for starty in np.concatenate((np.arange(0, himg-hpatch,hgap), np.array([himg-hpatch])), axis=0):
-                for startx in np.concatenate((np.arange(0, wimg-wpatch, wgap), np.array([wimg-wpatch])), axis=0):
-                    crop_img = img[starty:starty+hpatch,startx:startx+wpatch]
-                    curmask = mask[starty:starty+hpatch,startx:startx+wpatch]
-                    
-                    weightMap[starty:starty+hpatch,startx:startx+wpatch] += wmap
+            for starty in np.concatenate((np.arange(0, himg - hpatch, hgap), np.array([himg - hpatch])), axis=0):
+                for startx in np.concatenate((np.arange(0, wimg - wpatch, wgap), np.array([wimg - wpatch])), axis=0):
+                    crop_img = img[starty:starty + hpatch, startx:startx + wpatch]
+                    curmask = mask[starty:starty + hpatch, startx:startx + wpatch]
+
+                    weightMap[starty:starty + hpatch, startx:startx + wpatch] += wmap
                     
                     testimg = crop_img + imagenet_mean
                     testimg[testimg!=0.] = 1.
 
-                    if ((testimg.sum()/hpatch/wpatch/3) > 0.5) and ((curmask.sum()/hpatch/wpatch) > 0.25):
+                    if ((testimg.sum() / hpatch / wpatch / 3) > 0.5) and ((curmask.sum() / hpatch / wpatch) > 0.25):
                         # Reshape as needed to feed into model
                         crop_img = np.transpose(crop_img, (2, 0, 1))
-                        crop_img = crop_img.reshape((1,3, 227,227))
+                        crop_img = crop_img.reshape((1, 3, 227, 227))
                         # Run the session and calculate the class probability
-                        
                         probs = sess.run(out, feed_dict={x: crop_img})
                         #  Put in prob map
                         if np.isnan(probs[0,0]):
                             probs[0,0] = 0.0
-                        probMap[starty:starty+hpatch, startx:startx+wpatch] += probs[0,0]*wmap*(testimg.sum()/hpatch/wpatch/3) 
+                        probMap[starty:starty + hpatch, startx:startx + wpatch] += probs[0,0]* wmap * (testimg.sum()/ hpatch/ wpatch / 3) 
 
             # Normalised weight
             probMap /= weightMap
 
-            process_output_files(image_name, img_array, probMap, f"{output_directory}/{resolution}", warp_ds, resolution)
+            process_output_files(image_name, img_array, probMap, f"{output_directory}", warp_ds, resolution)
 
             endt = time.time()
             print("time elapsed:" + str(endt - start))
@@ -170,6 +168,14 @@ def run_volcano_deformation_detection(image_file_name, site, beam, model, latlon
 
 def process_output_files(image_name, img_array, probMap, output_directory, warp_ds, resolution):
     """Helper function to process and write output files."""
+    # Calculate percentages of pixels above 50% and 80% probability
+    total_pixels = probMap.size
+    above_50_percent = np.sum(probMap > 0.5)
+    above_80_percent = np.sum(probMap > 0.8)
+
+    percent_above_50 = (above_50_percent / total_pixels) * 100
+    percent_above_80 = (above_80_percent / total_pixels) * 100
+
     # Set the file path
     file_path = os.path.join(output_directory, f'{image_name}_probability.csv')
 
@@ -180,21 +186,13 @@ def process_output_files(image_name, img_array, probMap, output_directory, warp_
         # Write header if file is new
         if os.stat(file_path).st_size == 0:
             writer.writerow(["Resolution", "Max Probability", "Percent Above 50%", "Percent Above 80%"])
-    
-     # Calculate percentages of pixels above 50% and 80% probability
-    total_pixels = probMap.size
-    above_50_percent = np.sum(probMap > 0.5)
-    above_80_percent = np.sum(probMap > 0.8)
 
-    percent_above_50 = (above_50_percent / total_pixels) * 100
-    percent_above_80 = (above_80_percent / total_pixels) * 100
-
-    writer.writerow([
-        resolution, 
-        probMap.max(),
-        percent_above_50,
-        percent_above_80
-    ])
+        writer.writerow([
+            resolution, 
+            probMap.max() * 100,
+            percent_above_50,
+            percent_above_80
+        ])
 
     if probMap.max() > 0.1:
         im_scale = img_array/255.
