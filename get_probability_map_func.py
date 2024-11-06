@@ -45,7 +45,7 @@ def run_volcano_deformation_detection(image_file_name, site, beam, model, latlon
     image_path = f"images/{site}/{beam}/{image_file_name}"
     output_directory = f"probability_map/{site}/{beam}/{image_name}/{'latlong' if latlong else 'utm'}/{'m1' if model == 'models/model1.pd' else 'm2'}"
     resolution_array_full = (
-        np.linspace(0.00005, 0.0015, 10).tolist()
+        np.linspace(0.00005, 0.001, 10).tolist()
         if latlong
         else [i for i in range(5,105, 5)]
     )
@@ -84,6 +84,9 @@ def run_volcano_deformation_detection(image_file_name, site, beam, model, latlon
     epsg_code = 32600 + utm_zone + (100 if south else 0)
     spatial_reference = osr.SpatialReference()
     spatial_reference.ImportFromEPSG(epsg_code)
+
+    # Reset the graph before loading each model
+    tf.compat.v1.reset_default_graph()
 
     with tf.compat.v1.Session() as sess:
         with tf.io.gfile.GFile(model, 'rb') as f:
@@ -213,7 +216,7 @@ def process_output_files(image_name, img_array, probMap, output_directory, warp_
         
         # Write RGB probmap image
         driver = gdal.GetDriverByName("GTiff")
-        output_rgb = driver.Create(f'{output_directory}/{image_name}_rgb_probmap.tif',
+        output_rgb = driver.Create(f'{output_directory}/{resolution}/{image_name}_rgb_probmap.tif',
                                     im_scale.shape[1],
                                     im_scale.shape[0],
                                     3,
@@ -233,7 +236,7 @@ def process_output_files(image_name, img_array, probMap, output_directory, warp_
         output_rgb = None
 
         print(probMap.shape)
-        output_probmap = driver.Create(f'{output_directory}/{image_name}_probmap.tif',
+        output_probmap = driver.Create(f'{output_directory}/{resolution}/{image_name}_probmap.tif',
                                     probMap.shape[1],
                                     probMap.shape[0],
                                     1,
