@@ -1,9 +1,6 @@
-import argparse
 import boto3
 import os
 
-
-# ####################### HELPER FUNCTION #######################################
 def download_images_from_s3(bucket_name, site, beam, disp_local_dir, wrp_local_dir):
     """
     Download paired .disp.geo.tif and .adf.wrp.geo.tif images from an S3 bucket if both files exist.
@@ -56,49 +53,4 @@ def download_images_from_s3(bucket_name, site, beam, disp_local_dir, wrp_local_d
             print(f"File already exists: {wrp_local_path} - Skipping download")
 
     print("Download of paired files complete.")
-
-
-def main():
-    args = parse_args()
-    download_images_from_s3(
-        args.bucket_name,
-        args.site,
-        args.beam,
-        args.disp_dir,
-        args.wrp_dir
-    )
-
-def parse_args():
-    """
-    Parse command line arguments
-    """
-    parser = argparse.ArgumentParser(
-        description="Download paired .disp.geo.tif and .adf.wrp.geo.tif images from S3")
-    parser.add_argument("--bucket_name",
-                        type=str,
-                        help="Name of S3 Bucket",
-                        required=True),
-    parser.add_argument("--site",
-                        type=str,
-                        help="Site folder in S3 bucket",
-                        required=True),
-    parser.add_argument("--beam",
-                        type=str,
-                        help="Beam folder in S3 bucket",
-                        required=True),
-    parser.add_argument("--disp_dir",
-                        type=str,
-                        help="Local directory to save disp images",
-                        required=True),
-    parser.add_argument("--wrp_dir",
-                        type=str,
-                        help="Local directory to save wrp images",
-                        required=True),
-    
-    args = parser.parse_args()
-
-    return args
-
-
-if __name__ == '__main__':
-    main()
+    return {p.split('/')[-1] for p in paired_prefixes}

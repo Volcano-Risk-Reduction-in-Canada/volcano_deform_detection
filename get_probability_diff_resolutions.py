@@ -5,7 +5,7 @@ import gc
 
 logging.basicConfig(level=logging.DEBUG, filename='debug.log')
 
-from get_probability_map_func import run_volcano_deformation_detection
+from get_probability_map_func_diff_resolutions import run_volcano_deformation_detection
 
 
 def main():

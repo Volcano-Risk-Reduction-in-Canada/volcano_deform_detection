@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
+from data_utils import get_percent_above_50_80
 from osgeo import gdal, osr
 from scipy.stats import norm
 from skimage import morphology
@@ -172,12 +173,7 @@ def run_volcano_deformation_detection(image_file_name, site, beam, model, latlon
 def process_output_files(image_name, img_array, probMap, output_directory, warp_ds, resolution):
     """Helper function to process and write output files."""
     # Calculate percentages of pixels above 50% and 80% probability
-    total_pixels = probMap.size
-    above_50_percent = np.sum(probMap > 0.5)
-    above_80_percent = np.sum(probMap > 0.8)
-
-    percent_above_50 = (above_50_percent / total_pixels) * 100
-    percent_above_80 = (above_80_percent / total_pixels) * 100
+    percent_above_50, percent_above_80 = get_percent_above_50_80(probMap)
 
     # Set the file path
     file_path = os.path.join(output_directory, f'{image_name}_probability.csv')
