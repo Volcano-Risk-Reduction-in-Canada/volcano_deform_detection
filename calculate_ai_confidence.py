@@ -1,6 +1,7 @@
 import numpy as np
 from osgeo import gdal
 
+
 def read_tif(file_path, resolution, latlong):
     print("READ TIF", latlong)
     # Open the TIF file and resample to the desired resolution
@@ -50,15 +51,15 @@ def read_tif(file_path, resolution, latlong):
 
     return img_array
 
-def calculate_confidence_score(displacement_map, ai_output_map):
+def calculate_normalized_displacement_in_50_and_80_regions(displacement_map, ai_output_map):
     print("CALC CONFIDENCE SCORE")
     # Create masks for the 80% and 50% confidence regions
-    confidence_80_mask = ai_output_map >= 0.8
-    confidence_50_mask = ai_output_map >= 0.5
+    disp_80_mask = ai_output_map >= 0.8
+    disp_50_mask = ai_output_map >= 0.5
 
     # Extract displacement values within the confidence regions
-    displacement_80_region = displacement_map[confidence_80_mask]
-    displacement_50_region = displacement_map[confidence_50_mask]
+    displacement_80_region = displacement_map[disp_80_mask]
+    displacement_50_region = displacement_map[disp_50_mask]
 
     # Calculate average displacement in each region
     average_displacement_80 = np.nanmean(displacement_80_region)  # Use nanmean to ignore NaN values
@@ -68,7 +69,55 @@ def calculate_confidence_score(displacement_map, ai_output_map):
     max_absolute_displacement = np.nanmax(np.abs(displacement_map))
 
     # Calculate confidence scores as a fraction of the maximum displacement (normalization)
-    confidence_score_80 = average_displacement_80 / max_absolute_displacement
-    confidence_score_50 = average_displacement_50 / max_absolute_displacement
+    normalized_displacement_80 = average_displacement_80 / max_absolute_displacement
+    normalized_displacement_50 = average_displacement_50 / max_absolute_displacement
 
-    return confidence_score_80, confidence_score_50
+    # normalized measure of displacement within high-confidence regions
+    # an indicator of how significant the ground movement is in regions flagged by the model
+    return normalized_displacement_80, normalized_displacement_50
+
+
+def calculate_confusion_matrix(displacement_map, ai_prob_map, uplift_threshold=0, subsidence_threshold=0):
+    # Define ground truth areas based on the displacement map
+    uplift_area = displacement_map > uplift_threshold  # TRUE uplift area
+    subsidence_area = displacement_map < subsidence_threshold  # TRUE subsidence area
+    
+    # Define AI model regions (50% and 80% thresholds)
+    confidence_50_area = ai_prob_map >= 0.5  # AI 50% confidence area (blue circle)
+    confidence_80_area = ai_prob_map >= 0.8  # AI 80% confidence area (green circle)
+
+    # Calculate TP, FP, TN, and FN for the 50% confidence area
+    tp_50_uplift = np.sum((confidence_50_area & uplift_area))  # Uplift TP for 50%
+    fp_50_uplift = np.sum((confidence_50_area & ~uplift_area))  # Uplift FP for 50%
+    tn_50_uplift = np.sum((~confidence_50_area & ~uplift_area))  # Uplift TN for 50%
+    fn_50_uplift = np.sum((~confidence_50_area & uplift_area))  # Uplift FN for 50%
+
+    tp_50_subsidence = np.sum((confidence_50_area & subsidence_area))  # Subsidence TP for 50%
+    fp_50_subsidence = np.sum((confidence_50_area & ~subsidence_area))  # Subsidence FP for 50%
+    tn_50_subsidence = np.sum((~confidence_50_area & ~subsidence_area))  # Subsidence TN for 50%
+    fn_50_subsidence = np.sum((~confidence_50_area & subsidence_area))  # Subsidence FN for 50%
+
+    # Calculate TP, FP, TN, and FN for the 80% confidence area
+    tp_80_uplift = np.sum((confidence_80_area & uplift_area))  # Uplift TP for 80%
+    fp_80_uplift = np.sum((confidence_80_area & ~uplift_area))  # Uplift FP for 80%
+    tn_80_uplift = np.sum((~confidence_80_area & ~uplift_area))  # Uplift TN for 80%
+    fn_80_uplift = np.sum((~confidence_80_area & uplift_area))  # Uplift FN for 80%
+
+    tp_80_subsidence = np.sum((confidence_80_area & subsidence_area))  # Subsidence TP for 80%
+    fp_80_subsidence = np.sum((confidence_80_area & ~subsidence_area))  # Subsidence FP for 80%
+    tn_80_subsidence = np.sum((~confidence_80_area & ~subsidence_area))  # Subsidence TN for 80%
+    fn_80_subsidence = np.sum((~confidence_80_area & subsidence_area))  # Subsidence FN for 80%
+
+    # Results in dictionary format for better readability
+    results = {
+        50: {
+            "Uplift": {"TP": tp_50_uplift, "FP": fp_50_uplift, "TN": tn_50_uplift, "FN": fn_50_uplift},
+            "Subsidence": {"TP": tp_50_subsidence, "FP": fp_50_subsidence, "TN": tn_50_subsidence, "FN": fn_50_subsidence},
+        },
+        80: {
+            "Uplift": {"TP": tp_80_uplift, "FP": fp_80_uplift, "TN": tn_80_uplift, "FN": fn_80_uplift},
+            "Subsidence": {"TP": tp_80_subsidence, "FP": fp_80_subsidence, "TN": tn_80_subsidence, "FN": fn_80_subsidence},
+        }
+    }
+
+    return results

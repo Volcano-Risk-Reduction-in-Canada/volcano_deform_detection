@@ -4,7 +4,8 @@ import os
 import csv
 import pandas as pd
 
-from calculate_ai_confidence import calculate_confidence_score, read_tif
+from calculate_ai_confidence import calculate_confusion_matrix, calculate_normalized_displacement_in_50_and_80_regions, read_tif
+from data_utils import extract_stats_from_last_matching_row
 from get_probability_map_func_single_resolution import run_volcano_deformation_detection_single
 from osgeo import gdal
 from datetime import datetime
@@ -33,31 +34,6 @@ def main():
         stats = get_disp_image_statistics(args.site, args.beam, image, latlong, args.resolution, args.model)
         write_stats_to_csv(args.site, args.beam, image, output_disp_stats_dir, stats)
 
-
-def extract_stats_from_last_matching_row(file_path, resolution):
-    # Load the CSV file into a DataFrame
-    df = pd.read_csv(file_path)
-    
-    # Reverse the DataFrame and find the first row with the matching resolution
-    reversed_df = df.iloc[::-1]  # Reverse the DataFrame
-    matching_row = reversed_df[reversed_df['Resolution'] == resolution].head(1)
-
-    # Check if a matching row was found
-    if matching_row.empty:
-        print(f"No data found for resolution: {resolution}")
-        return None, None, None
-    else:
-        print(f"Last matching row for resolution {resolution}:\n", matching_row)
-        max_probability = matching_row["Max Probability"].values[0]
-        percent_above_50 = matching_row["Percent Above 50%"].values[0]
-        percent_above_80 = matching_row["Percent Above 80%"].values[0]
-        
-        print(f"Values for resolution {resolution}:")
-        print("Max Probability:", max_probability)
-        print("Percent Above 50%:", percent_above_50)
-        print("Percent Above 80%:", percent_above_80)
-        
-        return max_probability, percent_above_50, percent_above_80
 
 def get_disp_image_statistics(site, beam, image_name, latlong, resolution, model):
     print("GETTING DISP IMG STATS")
@@ -103,11 +79,91 @@ def get_disp_image_statistics(site, beam, image_name, latlong, resolution, model
     # displacement map is always in Longitude/Latitude
     displacement_map = read_tif(file_path, resolution, True)
 
-    # Calculate the confidence score
-    confidence_score_80, confidence_score_50 = calculate_confidence_score(displacement_map, ai_output_map)
+    # Run the confusion matrix calculation
+    results = calculate_confusion_matrix(displacement_map, ai_output_map)
+
+    # Print the results
+    print("Confusion Matrix Results:")
+    print(results)
+
+    TP_uplift_50 = results[50]["Uplift"]["TP"]
+    TP_subsidence_50 = results[50]["Subsidence"]["TP"]
+    TP_uplift_80 = results[80]["Uplift"]["TP"]
+    TP_subsidence_80 = results[80]["Subsidence"]["TP"]
+
+    TN_uplift_50 = results[50]["Uplift"]["TN"]
+    TN_subsidence_50 = results[50]["Subsidence"]["TN"]
+    TN_uplift_80 = results[80]["Uplift"]["TN"]
+    TN_subsidence_80 = results[80]["Subsidence"]["TN"]
+
+    FP_uplift_50 = results[50]["Uplift"]["FP"]
+    FP_subsidence_50 = results[50]["Subsidence"]["FP"]
+    FP_uplift_80 = results[80]["Uplift"]["FP"]
+    FP_subsidence_80 = results[80]["Subsidence"]["FP"]
+
+    FN_uplift_50 = results[50]["Uplift"]["FN"]
+    FN_subsidence_50 = results[50]["Subsidence"]["FN"]
+    FN_uplift_80 = results[80]["Uplift"]["FN"]
+    FN_subsidence_80 = results[80]["Subsidence"]["FN"]
+
+
+    accuracy_50 = (
+        (
+            TP_uplift_50 + TP_subsidence_50 + TN_uplift_50 + TN_subsidence_50
+        ) / (
+            TP_uplift_50 + TP_subsidence_50 + TN_uplift_50 + TN_subsidence_50 + FP_uplift_50 + FP_subsidence_50 + FN_uplift_50 + FN_subsidence_50
+        )
+    )
+
+    # sensitivity
+    recall_50 = (
+        (
+            TP_uplift_50 + TP_subsidence_50
+        ) / (
+            TP_uplift_50 + TP_subsidence_50 + FN_uplift_50 + FN_subsidence_50
+        )
+    )
+
+    # positive predictive value
+    precision_50 = (
+        (
+            TP_uplift_50 + TP_subsidence_50
+        ) / (
+            TP_uplift_50 + TP_subsidence_50 + FP_uplift_50 + FP_subsidence_50
+        )
+    )
+
+    accuracy_80 = (
+        (
+            TP_uplift_80 + TP_subsidence_80 + TN_uplift_80 + TN_subsidence_80
+        ) / (
+            TP_uplift_80 + TP_subsidence_80 + TN_uplift_80 + TN_subsidence_80 + FP_uplift_80 + FP_subsidence_80 + FN_uplift_80 + FN_subsidence_80
+        )
+    )
+
+    # sensitivity
+    recall_80 = (
+        (
+            TP_uplift_80 + TP_subsidence_80
+        ) / (
+            TP_uplift_80 + TP_subsidence_80 + FN_uplift_80 + FN_subsidence_80
+        )
+    )
+
+    # positive predictive value
+    precision_80 = (
+        (
+            TP_uplift_80 + TP_subsidence_80
+        ) / (
+            TP_uplift_80 + TP_subsidence_80 + FP_uplift_80 + FP_subsidence_80
+        )
+    )
+
+
+    # Calculate the normalized displacement
+    normalized_displacement_80, normalized_displacement_50 = calculate_normalized_displacement_in_50_and_80_regions(displacement_map, ai_output_map)
 
     # extract "Max Probability", "Percent Above 50%", "Percent Above 80%" with the input resolution from csv file
-    # Example usage
     ai_csv_path = os.path.join(
         ai_output_folder,
         f'{image_name}_probability.csv'
@@ -123,11 +179,17 @@ def get_disp_image_statistics(site, beam, image_name, latlong, resolution, model
         "25th Percentile": percentiles[0],
         "50th Percentile (Median)": percentiles[1],
         "75th Percentile": percentiles[2],
-        "Confidence Score (50% Threshold)": confidence_score_50,
-        "Confidence Score (80% Threshold)": confidence_score_80,
+        "Normalized Displacement (50% Threshold)": normalized_displacement_50,
+        "Normalized Displacement (80% Threshold)": normalized_displacement_80,
         "[AI] Max Probability": max_prob,
         "[AI] Percent Above 50%": percent_above_50,
-        "[AI] Percent Above 80%": percent_above_80
+        "[AI] Percent Above 80%": percent_above_80,
+        "Accuracy (50% Threshold)": accuracy_50,
+        "Recall (50% Threshold)": recall_50,
+        "Precision (50% Threshold)": precision_50,
+        "Accuracy (80% Threshold)": accuracy_80,
+        "Recall (80% Threshold)": recall_80,
+        "Precision (80% Threshold)": precision_80
     }
     
     return stats
@@ -157,11 +219,17 @@ def write_stats_to_csv(site, beam, image_name, output_disp_stats_dir, stats):
                 "25th Percentile",
                 "50th Percentile (Median)",
                 "75th Percentile",
-                "Confidence Score (50% Threshold)",
-                "Confidence Score (80% Threshold)",
+                "Normalized Displacement (50% Threshold)",
+                "Normalized Displacement (80% Threshold)",
                 "[AI] Max Probability",
                 "[AI] Percent Above 50%",
-                "[AI] Percent Above 80%"
+                "[AI] Percent Above 80%",
+                "Accuracy (50% Threshold)",
+                "Recall (50% Threshold)",
+                "Precision (50% Threshold)",
+                "Accuracy (80% Threshold)",
+                "Recall (80% Threshold)",
+                "Precision (80% Threshold)"
             ])
 
         writer.writerow([
@@ -174,11 +242,18 @@ def write_stats_to_csv(site, beam, image_name, output_disp_stats_dir, stats):
             stats["25th Percentile"],
             stats["50th Percentile (Median)"],
             stats["75th Percentile"],
-            stats["Confidence Score (50% Threshold)"],
-            stats["Confidence Score (80% Threshold)"],
+            stats["Normalized Displacement (50% Threshold)"],
+            stats["Normalized Displacement (80% Threshold)"],
             stats["[AI] Max Probability"],
             stats["[AI] Percent Above 50%"],
-            stats["[AI] Percent Above 80%"]
+            stats["[AI] Percent Above 80%"],
+            stats["Accuracy (50% Threshold)"],
+            stats["Recall (50% Threshold)"],
+            stats["Precision (50% Threshold)"],
+            stats["Accuracy (80% Threshold)"],
+            stats["Recall (80% Threshold)"],
+            stats["Precision (80% Threshold)"]
+            
         ])
 
 
