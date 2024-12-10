@@ -193,53 +193,53 @@ def process_output_files(image_name, img_array, probMap, output_directory, warp_
             percent_above_80
         ])
 
-    if probMap.max() > 0.1:
-        im_scale = img_array/255.
-        im_scale[:,:,2] = im_scale[:,:,2]*(1-probMap) + probMap
-        im_scale[:,:,1] = im_scale[:,:,1]*(1-probMap) + probMap
-        # Draw contour of high prob
-        psbound = np.logical_and(probMap>0.5,probMap<0.525)
-        im_scale[:,:,2] -= psbound
-        im_scale[:,:,1] = im_scale[:,:,1]*(1-psbound) + 0.5*psbound
-        im_scale[:,:,0] = im_scale[:,:,0]*(1-psbound) + 0.75*psbound
-        psbound = np.logical_and(probMap>0.8,probMap<0.825)
-        im_scale[:,:,0] -= psbound
-        im_scale[:,:,1] += psbound
-        im_scale[:,:,2] -= psbound
-        # Cap values
-        im_scale[im_scale<0] = 0.
-        im_scale[im_scale>1] = 1.
-        
-        # Write RGB probmap image
-        driver = gdal.GetDriverByName("GTiff")
-        output_rgb = driver.Create(f'{output_directory}/{resolution}/{image_name}_rgb_probmap.tif',
-                                    im_scale.shape[1],
-                                    im_scale.shape[0],
-                                    3,
-                                    gdal.GDT_Byte,
-                                    options = ['PHOTOMETRIC=RGB', 'PROFILE=GeoTIFF',])
-        output_rgb.SetProjection(warp_ds.GetProjection())
-        output_rgb.SetGeoTransform(warp_ds.GetGeoTransform())
-        output_rgb.GetRasterBand(1).WriteArray(im_scale[:, :, 2]*255 )
-        output_rgb.GetRasterBand(1).FlushCache()
-        output_rgb.GetRasterBand(1).SetNoDataValue(0)
-        output_rgb.GetRasterBand(2).WriteArray(im_scale[:, :, 1]*255 )
-        output_rgb.GetRasterBand(2).FlushCache()
-        output_rgb.GetRasterBand(2).SetNoDataValue(0)
-        output_rgb.GetRasterBand(3).WriteArray(im_scale[:, :, 0]*255 )
-        output_rgb.GetRasterBand(3).FlushCache()
-        output_rgb.GetRasterBand(2).SetNoDataValue(0)
-        output_rgb = None
+    # if probMap.max() > 0.1:
+    im_scale = img_array/255.
+    im_scale[:,:,2] = im_scale[:,:,2]*(1-probMap) + probMap
+    im_scale[:,:,1] = im_scale[:,:,1]*(1-probMap) + probMap
+    # Draw contour of high prob
+    psbound = np.logical_and(probMap>0.5,probMap<0.525)
+    im_scale[:,:,2] -= psbound
+    im_scale[:,:,1] = im_scale[:,:,1]*(1-psbound) + 0.5*psbound
+    im_scale[:,:,0] = im_scale[:,:,0]*(1-psbound) + 0.75*psbound
+    psbound = np.logical_and(probMap>0.8,probMap<0.825)
+    im_scale[:,:,0] -= psbound
+    im_scale[:,:,1] += psbound
+    im_scale[:,:,2] -= psbound
+    # Cap values
+    im_scale[im_scale<0] = 0.
+    im_scale[im_scale>1] = 1.
+    
+    # Write RGB probmap image
+    driver = gdal.GetDriverByName("GTiff")
+    output_rgb = driver.Create(f'{output_directory}/{resolution}/{image_name}_rgb_probmap.tif',
+                                im_scale.shape[1],
+                                im_scale.shape[0],
+                                3,
+                                gdal.GDT_Byte,
+                                options = ['PHOTOMETRIC=RGB', 'PROFILE=GeoTIFF',])
+    output_rgb.SetProjection(warp_ds.GetProjection())
+    output_rgb.SetGeoTransform(warp_ds.GetGeoTransform())
+    output_rgb.GetRasterBand(1).WriteArray(im_scale[:, :, 2]*255 )
+    output_rgb.GetRasterBand(1).FlushCache()
+    output_rgb.GetRasterBand(1).SetNoDataValue(0)
+    output_rgb.GetRasterBand(2).WriteArray(im_scale[:, :, 1]*255 )
+    output_rgb.GetRasterBand(2).FlushCache()
+    output_rgb.GetRasterBand(2).SetNoDataValue(0)
+    output_rgb.GetRasterBand(3).WriteArray(im_scale[:, :, 0]*255 )
+    output_rgb.GetRasterBand(3).FlushCache()
+    output_rgb.GetRasterBand(2).SetNoDataValue(0)
+    output_rgb = None
 
-        print(probMap.shape)
-        output_probmap = driver.Create(f'{output_directory}/{resolution}/{image_name}_probmap.tif',
-                                    probMap.shape[1],
-                                    probMap.shape[0],
-                                    1,
-                                    gdal.GDT_Float32)
-        output_probmap.SetProjection(warp_ds.GetProjection())
-        output_probmap.SetGeoTransform(warp_ds.GetGeoTransform())
-        output_probmap.GetRasterBand(1).WriteArray(probMap)
-        output_probmap.GetRasterBand(1).FlushCache()
-        output_probmap.GetRasterBand(1).SetNoDataValue(0)
-        output_probmap = None
+    print(probMap.shape)
+    output_probmap = driver.Create(f'{output_directory}/{resolution}/{image_name}_probmap.tif',
+                                probMap.shape[1],
+                                probMap.shape[0],
+                                1,
+                                gdal.GDT_Float32)
+    output_probmap.SetProjection(warp_ds.GetProjection())
+    output_probmap.SetGeoTransform(warp_ds.GetGeoTransform())
+    output_probmap.GetRasterBand(1).WriteArray(probMap)
+    output_probmap.GetRasterBand(1).FlushCache()
+    output_probmap.GetRasterBand(1).SetNoDataValue(0)
+    output_probmap = None
