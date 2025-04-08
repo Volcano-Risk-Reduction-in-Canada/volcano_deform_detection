@@ -1,7 +1,8 @@
-import boto3
 import os
 import json
 from datetime import datetime
+
+from data_utils import s3
 
 def serialize(obj):
     """Convert datetime objects to ISO 8601 strings."""
@@ -48,7 +49,6 @@ def download_images_from_s3(bucket_name, site, beam, disp_local_dir, wrp_local_d
     - disp_local_dir: str - Local directory to save disp images
     - wrp_local_dir: str - Local directory to save wrp images
     """
-    s3 = boto3.client("s3", verify=False)
     disp_suffix, wrp_suffix = ".disp.geo.tif", ".adf.wrp.geo.tif"
 
     # Ensure local directories exist

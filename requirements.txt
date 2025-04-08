@@ -53,3 +53,6 @@ urllib3==2.1.0
 Werkzeug==3.0.1
 wrapt==1.14.1
 boto3
+pandas
+# gdal==3.10.2
+gdal==3.4.1

@@ -12,19 +12,43 @@ Authors:
 
 import csv
 import os
+import tempfile
 import time
 import gc
 import sys
 import numpy as np
 import tensorflow as tf
 
-from data_utils import get_percent_above_50_80
+
+from data_utils import s3, get_percent_above_50_80
 from osgeo import gdal, osr
 from scipy.stats import norm
 from skimage import morphology
 
+def upload_file_to_s3(local_path, bucket, s3_key):
+    print(f'FUNCTION: upload_file_to_s3 - {local_path}, {bucket}, {s3_key}')
+    try:
+        s3.upload_file(local_path, bucket, s3_key)
+        print(f"[DEBUG] ✅ Upload successful: s3://{bucket}/{s3_key}")
+    except Exception as e:
+        print(f"[ERROR] ❌ Failed to upload {local_path} to S3: {e}")
 
-def run_volcano_deformation_detection_single(image_file_name, site, beam, model, latlong, resolution):
+def write_csv_row(file_path, resolution, probMap, percent_above_50, percent_above_80):
+    write_header = os.stat(file_path).st_size == 0
+    with open(file_path, 'a', newline='') as file:
+        writer = csv.writer(file)
+        if write_header:
+            # Write header if file is new
+            writer.writerow(["Resolution", "Max Probability", "Percent Above 50%", "Percent Above 80%"])
+        writer.writerow([
+            resolution,
+            probMap.max() * 100,
+            percent_above_50,
+            percent_above_80
+        ])
+
+
+def run_volcano_deformation_detection_single(image_file_name, site, beam, model, latlong, resolution, local, bucket_name, image_name):
     """
     Run Volcano Deformation Detection
     
@@ -36,11 +60,15 @@ def run_volcano_deformation_detection_single(image_file_name, site, beam, model,
     - latlong: boolean - coordinate system used (Latitude/Longitude = True, UTM = False)
     - resolution: int (multiple of 5, between 5 and 100 inclusive) - the resolution of the image
     """
-    image_name = image_file_name.split('.')[0]
+    print(f'FUNCTION: run_volcano_deformation_detection_single - {image_file_name}, {site}, {beam}, {model}, {latlong}, {resolution}, {local}, {bucket_name}, {image_name}')
+    image_name = image_name.split('.')[0]
     image_path = os.path.join(
         "wrp_images",
         site,
         beam,
+        image_file_name
+    ) if local else os.path.join(
+        "s3://",
         image_file_name
     )
     output_directory = os.path.join(
@@ -50,17 +78,38 @@ def run_volcano_deformation_detection_single(image_file_name, site, beam, model,
         image_name,
         'latlong' if latlong else 'utm',
         'm1' if model == 'models/model1.pd' else 'm2'
+    ) if local else os.path.join(
+        "s3://",
+        bucket_name,
+        site,
+        beam,
+        "probability_map",
+        image_name,
+        'latlong' if latlong else 'utm',
+        'm1' if model == 'models/model1.pd' else 'm2'
     )
     ai_rgb_probmap = os.path.join(
         output_directory,
         f"{resolution}",
         f"{image_name}_rgb_probmap.tif"
     )
+    print(f'check paths: {image_name}, {image_path}, {output_directory}, {ai_rgb_probmap}')
+    print(f"[DEBUG] Checking if output exists: {ai_rgb_probmap}, exists={os.path.isfile(ai_rgb_probmap)}")
     print(ai_rgb_probmap, os.path.isfile(ai_rgb_probmap))
+
     if not os.path.exists(ai_rgb_probmap):
+        print("[DEBUG] Starting model inference")
         start = time.time()
 
-        os.makedirs(output_directory, exist_ok=True)
+        if local:
+            os.makedirs(output_directory, exist_ok=True)
+        else:            
+            # Check if "folder" exists
+            response = s3.list_objects_v2(Bucket=bucket_name, Prefix=output_directory, MaxKeys=1)
+
+            if 'Contents' not in response:
+                # "Folder" doesn't exist – create it by adding a dummy object
+                s3.put_object(Bucket=bucket_name, Key=output_directory)
 
         #mean of imagenet dataset in BGR
         imagenet_mean = np.array([104., 117., 124.], dtype=np.float32)
@@ -78,8 +127,12 @@ def run_volcano_deformation_detection_single(image_file_name, site, beam, model,
         wmap = wmap/wmap.sum()
 
         # Import image with GDAL
+        print(image_path)
+        print(f"[DEBUG] Opening image: {image_path}")
         ds = gdal.Open(image_path,
                     gdal.GA_ReadOnly)
+        print(f"[DEBUG] Dataset opened: {ds is not None}")
+        print(ds)
         
         # Project to UTM for consistent pixel spacing
         utm_zone = int(1+(ds.GetGeoTransform()[0]+180.0)/6.0)
@@ -102,7 +155,18 @@ def run_volcano_deformation_detection_single(image_file_name, site, beam, model,
             x = sess.graph.get_tensor_by_name('data:0')
             out = sess.graph.get_tensor_by_name('softmax:0')
 
-            os.makedirs(f"{output_directory}/{resolution}", exist_ok=True)
+            if local:
+                os.makedirs(f"{output_directory}/{resolution}", exist_ok=True)
+            else:
+                print(f'check if folder exists - {output_directory}/{resolution}')
+                # Check if "folder" exists
+                response = s3.list_objects_v2(Bucket=bucket_name, Prefix=f"{output_directory}/{resolution}", MaxKeys=1)
+
+                if 'Contents' not in response:
+                    # "Folder" doesn't exist – create it by adding a dummy object
+                    print(f'create folder in s3 - {output_directory}/{resolution}')
+                    s3.put_object(Bucket=bucket_name, Key=f"{output_directory}/{resolution}")
+
 
             # Resample image to 100m x 100m equivalent decimel degrees
             warp_options = gdal.WarpOptions(
@@ -132,6 +196,7 @@ def run_volcano_deformation_detection_single(image_file_name, site, beam, model,
             weightMap = np.zeros((himg, wimg), np.float32) + 0.00001
             probMap = np.zeros((himg,wimg), np.float32)
 
+            print("[DEBUG] Starting inference loop")
             for starty in np.concatenate((np.arange(0, himg - hpatch, hgap), np.array([himg - hpatch])), axis=0):
                 for startx in np.concatenate((np.arange(0, wimg - wpatch, wgap), np.array([wimg - wpatch])), axis=0):
                     crop_img = img[starty:starty + hpatch, startx:startx + wpatch]
@@ -156,10 +221,11 @@ def run_volcano_deformation_detection_single(image_file_name, site, beam, model,
             # Normalised weight
             probMap /= weightMap
 
-            process_output_files(image_name, img_array, probMap, f"{output_directory}", warp_ds, resolution)
+            print("[DEBUG] Running output processing and upload")
+            process_output_files(image_name, img_array, probMap, f"{output_directory}", warp_ds, resolution, local, bucket_name)
 
             endt = time.time()
-            print("time elapsed:" + str(endt - start))
+            print("[DEBUG] Model inference completed in", round(endt - start, 2), "seconds")
 
             # Explicitly close datasets to free memory
             warp_ds = None
@@ -170,28 +236,31 @@ def run_volcano_deformation_detection_single(image_file_name, site, beam, model,
         print(f"File already exists: {ai_rgb_probmap} - Skipping")
         return
 
-def process_output_files(image_name, img_array, probMap, output_directory, warp_ds, resolution):
+def process_output_files(image_name, img_array, probMap, output_directory, warp_ds, resolution, local, bucket_name):
     """Helper function to process and write output files."""
+    print(f"[DEBUG] process_output_files called for image: {image_name}")
     # Calculate percentages of pixels above 50% and 80% probability
     percent_above_50, percent_above_80 = get_percent_above_50_80(probMap)
 
-    # Set the file path
-    file_path = os.path.join(output_directory, f'{image_name}_probability.csv')
+    if local:
+        file_path = os.path.join(output_directory, f'{image_name}_probability.csv')
+        write_csv_row(file_path, resolution, probMap, percent_above_50, percent_above_80)
+    else:
+        s3_key = f'{output_directory}/{image_name}_probability.csv'
+        bucket_name = 'your-bucket-name'
 
-    # Open file in append mode
-    with open(file_path, 'a', newline='') as file:
-        writer = csv.writer(file)
-        
-        # Write header if file is new
-        if os.stat(file_path).st_size == 0:
-            writer.writerow(["Resolution", "Max Probability", "Percent Above 50%", "Percent Above 80%"])
+        with tempfile.NamedTemporaryFile(mode='a+', delete=False, newline='') as temp_file:
+            file_path = temp_file.name
 
-        writer.writerow([
-            resolution, 
-            probMap.max() * 100,
-            percent_above_50,
-            percent_above_80
-        ])
+        try:
+            s3.download_file(bucket_name, s3_key, file_path)
+        except s3.exceptions.ClientError as e:
+            if e.response['Error']['Code'] != '404':
+                raise  # Only ignore if the file doesn't exist
+
+        write_csv_row(file_path, resolution, probMap, percent_above_50, percent_above_80)
+        s3.upload_file(file_path, bucket_name, s3_key)
+        os.remove(file_path)
 
     # if probMap.max() > 0.1:
     im_scale = img_array/255.
@@ -243,3 +312,27 @@ def process_output_files(image_name, img_array, probMap, output_directory, warp_
     output_probmap.GetRasterBand(1).FlushCache()
     output_probmap.GetRasterBand(1).SetNoDataValue(0)
     output_probmap = None
+
+    if not local: 
+        upload_file_to_s3(
+            f'{output_directory}/{resolution}/{image_name}_rgb_probmap.tif', 
+            bucket_name, 
+            f"{output_directory}/{resolution}/{image_name}_rgb_probmap.tif"
+
+        )
+
+        upload_file_to_s3(
+            f'{output_directory}/{resolution}/{image_name}_probmap.tif', 
+            bucket_name, 
+            f"{output_directory}/{resolution}/{image_name}_probmap.tif"
+        )
+
+        upload_file_to_s3(
+            f'{output_directory}/{resolution}/{image_name}_probability.csv', 
+            bucket_name, 
+            f"{output_directory}/{resolution}/{image_name}_probability.csv"
+        )
+
+        print(f"[DEBUG] Finished process_output_files for {image_name}")
+
+        

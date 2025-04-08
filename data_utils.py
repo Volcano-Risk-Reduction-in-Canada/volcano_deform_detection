@@ -1,7 +1,9 @@
 
+import boto3
 import numpy as np
 import pandas as pd
 
+s3 = boto3.client("s3", verify=False)
 
 def get_percent_above_50_80(probMap):
     total_pixels = probMap.size

@@ -1,43 +1,108 @@
 import argparse
+import io
+import boto3
 import numpy as np
 import os
 import csv
 import pandas as pd
+
 
 from calculate_ai_confidence import calculate_confusion_matrix, calculate_normalized_displacement_in_50_and_80_regions, read_tif
 from data_utils import extract_stats_from_last_matching_row
 from get_probability_map_func_single_resolution import run_volcano_deformation_detection_single
 from osgeo import gdal
 from datetime import datetime
+from data_utils import s3
 
 
 from get_disp_and_wrp_images_from_s3 import download_images_from_s3
 
 def main():
     args = parse_args()
-    output_disp_stats_dir = f"disp_stats"
+    local = False
+    print(f"[DEBUG] Received arguments: {args}")
+
+    output_disp_stats_dir = f"disp_stats" if local else f"{args.bucket_name}/disp_stats"
     latlong = args.resolution < 1
-    image_name_set = download_images_from_s3(
-        args.bucket_name,
-        args.site,
-        args.beam,
-        args.disp_dir,
-        args.wrp_dir
-    )
-    # generate ai model outputs
-    os.makedirs(output_disp_stats_dir, exist_ok=True)
+    print(f"[DEBUG] Running in {'LOCAL' if local else 'AWS'} mode")
+    print(f"[DEBUG] Output directory: {output_disp_stats_dir}")
+
+    if local:
+        os.makedirs(output_disp_stats_dir, exist_ok=True)
+        print(f"[DEBUG] Created local output directory: {output_disp_stats_dir}")
+        image_name_set = download_images_from_s3(
+            args.bucket_name,
+            args.site,
+            args.beam,
+            args.disp_dir,
+            args.wrp_dir
+        )
+    else:
+        print(f"[DEBUG] Attempting to list S3 objects from: {args.bucket_name}/{args.site}/{args.beam}/")
+        response = s3.list_objects_v2(Bucket=args.bucket_name, Prefix=f"{args.site}/{args.beam}/")
+        image_name_set = []
+        if "Contents" in response:
+            for obj in response["Contents"]:
+                filename = obj["Key"].split("/")[-1]
+                if filename.endswith(".disp.geo.tif"):
+                    base_name = filename.replace(".disp.geo.tif", "")
+                    image_name_set.append(base_name)
+        print(f"[DEBUG] Found {len(image_name_set)} images to process: {image_name_set}")
 
     for image in image_name_set:
-        run_volcano_deformation_detection_single(f"{image}.adf.wrp.geo.tif", args.site, args.beam, f"models/model{args.model}.pd", latlong, args.resolution)
+        wrp_path = f"{args.bucket_name}/{args.site}/{args.beam}/{image}.adf.wrp.geo.tif"
+        model_path = f"models/model{args.model}.pd"
+        print(f"[DEBUG] Running model on image: {wrp_path}")
+        try:
+            run_volcano_deformation_detection_single(
+                wrp_path,
+                args.site,
+                args.beam,
+                model_path,
+                latlong,
+                args.resolution,
+                local,
+                args.bucket_name,
+                image
+            )
+        except Exception as e:
+            print(f"[ERROR] Failed to process {image}: {e}")
 
     for image in image_name_set:
-        stats = get_disp_image_statistics(args.site, args.beam, image, latlong, args.resolution, args.model)
-        write_stats_to_csv(args.site, args.beam, image, output_disp_stats_dir, stats)
+        print(f"[DEBUG] Generating statistics for image: {image}")
+        try:
+            stats = get_disp_image_statistics(
+                args.site,
+                args.beam,
+                image,
+                latlong,
+                args.resolution,
+                args.model,
+                local,
+                args.bucket_name
+            )
+            write_stats_to_csv(
+                args.model,
+                args.site,
+                args.beam,
+                image,
+                output_disp_stats_dir,
+                stats,
+                local
+            )
+            print(f"[DEBUG] Finished writing stats for image: {image}")
+        except Exception as e:
+            print(f"[ERROR] Failed to generate stats for {image}: {e}")
 
 
-def get_disp_image_statistics(site, beam, image_name, latlong, resolution, model):
+
+def get_disp_image_statistics(site, beam, image_name, latlong, resolution, model, local, bucket_name):
     print("GETTING DISP IMG STATS")
-    file_path = os.path.join("disp_images", site, beam, f"{image_name}.disp.geo.tif")
+    if local:
+        file_path = os.path.join("disp_images", site, beam, f"{image_name}.disp.geo.tif")
+    else:
+        file_path = f"/vsis3/{bucket_name}/{site}/{beam}/{image_name}.disp.geo.tif"
+
     ai_output_folder = os.path.join(
         'probability_map',
         site,
@@ -46,11 +111,15 @@ def get_disp_image_statistics(site, beam, image_name, latlong, resolution, model
         'latlong' if latlong else 'utm',
         f'm{model}'
     )
-    ai_output_path = os.path.join(
-        ai_output_folder,
-        f'{resolution}',
-        f'{image_name}_probmap.tif'
-    )
+    if local:
+        ai_output_path = os.path.join(
+            ai_output_folder,
+            f'{resolution}',
+            f'{image_name}_probmap.tif'
+        )
+    else:
+        ai_output_path = f"/{bucket_name}/{site}/{beam}/{image_name}_{'latlong' if latlong else 'utm'}_{model}_{resolution}_probmap.tif"
+
     # Open the TIF file using GDAL
     dataset = gdal.Open(file_path)
     if not dataset:
@@ -164,10 +233,14 @@ def get_disp_image_statistics(site, beam, image_name, latlong, resolution, model
     normalized_displacement_80, normalized_displacement_50 = calculate_normalized_displacement_in_50_and_80_regions(displacement_map, ai_output_map)
 
     # extract "Max Probability", "Percent Above 50%", "Percent Above 80%" with the input resolution from csv file
-    ai_csv_path = os.path.join(
-        ai_output_folder,
-        f'{image_name}_probability.csv'
-    )
+    if local:
+        ai_csv_path = os.path.join(
+            ai_output_folder,
+            f'{image_name}_probability.csv'
+        )
+    else:
+        ai_csv_path = f"/vsis3/{bucket_name}/probability_map/{site}/{beam}/{image_name}/latlong/{model}/{image_name}_probability.csv"
+
     max_prob, percent_above_50, percent_above_80 = extract_stats_from_last_matching_row(ai_csv_path, resolution)
 
     # Print or return the results
@@ -194,67 +267,109 @@ def get_disp_image_statistics(site, beam, image_name, latlong, resolution, model
     
     return stats
 
-def write_stats_to_csv(site, beam, image_name, output_disp_stats_dir, stats):
+def write_stats_to_csv(model, site, beam, image_name, output_disp_stats_dir, stats, local):
     print("WRITING TO CSV")
     # Set the file path
-    file_path = os.path.join(output_disp_stats_dir, f'{site}_{beam}_stats.csv')
+    file_path = os.path.join(output_disp_stats_dir, f'm{model}_{site}_{beam}_stats.csv')
     # Assuming image_name is YYYYMMDD_HH_YYYYMMDD_HH
     # Split by '_HH_'
     start_date, end_date_with_hh = image_name.split('_HH_')[:2]
     # Remove '_HH' from the end date
     end_date = end_date_with_hh.split('_HH')[0]
-    # Open file in append mode
-    with open(file_path, 'a', newline='') as file:
-        writer = csv.writer(file)
-        
-        # Write header if file is new
-        if os.stat(file_path).st_size == 0:
+    if local:
+        # Open file in append mode
+        with open(file_path, 'a', newline='') as file:
+            writer = csv.writer(file)
+            
+            # Write header if file is new
+            if os.stat(file_path).st_size == 0:
+                writer.writerow([
+                    "Start Date",
+                    "End Date",
+                    "Minimum Value",
+                    "Maximum Value",
+                    "Absolute Maximum Value",
+                    "Range",
+                    "25th Percentile",
+                    "50th Percentile (Median)",
+                    "75th Percentile",
+                    "Normalized Displacement (50% Threshold)",
+                    "Normalized Displacement (80% Threshold)",
+                    "[AI] Max Probability",
+                    "[AI] Percent Above 50%",
+                    "[AI] Percent Above 80%",
+                    "Accuracy (50% Threshold)",
+                    "Recall (50% Threshold)",
+                    "Precision (50% Threshold)",
+                    "Accuracy (80% Threshold)",
+                    "Recall (80% Threshold)",
+                    "Precision (80% Threshold)"
+                ])
+
             writer.writerow([
-                "Start Date",
-                "End Date",
-                "Minimum Value",
-                "Maximum Value",
-                "Absolute Maximum Value",
-                "Range",
-                "25th Percentile",
-                "50th Percentile (Median)",
-                "75th Percentile",
-                "Normalized Displacement (50% Threshold)",
-                "Normalized Displacement (80% Threshold)",
-                "[AI] Max Probability",
-                "[AI] Percent Above 50%",
-                "[AI] Percent Above 80%",
-                "Accuracy (50% Threshold)",
-                "Recall (50% Threshold)",
-                "Precision (50% Threshold)",
-                "Accuracy (80% Threshold)",
-                "Recall (80% Threshold)",
-                "Precision (80% Threshold)"
+                datetime.strptime(start_date, "%Y%m%d").strftime("%Y-%m-%d"),
+                datetime.strptime(end_date, "%Y%m%d").strftime("%Y-%m-%d"),
+                stats["Minimum Value"],
+                stats["Maximum Value"],
+                stats["Absolute Maximum Value"],
+                stats["Range"],
+                stats["25th Percentile"],
+                stats["50th Percentile (Median)"],
+                stats["75th Percentile"],
+                stats["Normalized Displacement (50% Threshold)"],
+                stats["Normalized Displacement (80% Threshold)"],
+                stats["[AI] Max Probability"],
+                stats["[AI] Percent Above 50%"],
+                stats["[AI] Percent Above 80%"],
+                stats["Accuracy (50% Threshold)"],
+                stats["Recall (50% Threshold)"],
+                stats["Precision (50% Threshold)"],
+                stats["Accuracy (80% Threshold)"],
+                stats["Recall (80% Threshold)"],
+                stats["Precision (80% Threshold)"]
+                
             ])
+    else:
+        print("WRITING TO CSV")
+
+        file_key = f"{output_disp_stats_dir}/m{model}_{site}_{beam}_stats.csv"
+        bucket_name = output_disp_stats_dir.split('/')[0]
+        s3_path = '/'.join(output_disp_stats_dir.split('/')[1:])
+
+        # Prepare CSV in memory
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+
+        # Write header
+        writer.writerow([
+            "Start Date", "End Date",
+            "Minimum Value", "Maximum Value", "Absolute Maximum Value", "Range",
+            "25th Percentile", "50th Percentile (Median)", "75th Percentile",
+            "Normalized Displacement (50% Threshold)",
+            "Normalized Displacement (80% Threshold)",
+            "[AI] Max Probability", "[AI] Percent Above 50%", "[AI] Percent Above 80%",
+            "Accuracy (50% Threshold)", "Recall (50% Threshold)", "Precision (50% Threshold)",
+            "Accuracy (80% Threshold)", "Recall (80% Threshold)", "Precision (80% Threshold)"
+        ])
+
+        start_date, end_date_with_hh = image_name.split('_HH_')[:2]
+        end_date = end_date_with_hh.split('_HH')[0]
 
         writer.writerow([
             datetime.strptime(start_date, "%Y%m%d").strftime("%Y-%m-%d"),
             datetime.strptime(end_date, "%Y%m%d").strftime("%Y-%m-%d"),
-            stats["Minimum Value"],
-            stats["Maximum Value"],
-            stats["Absolute Maximum Value"],
-            stats["Range"],
-            stats["25th Percentile"],
-            stats["50th Percentile (Median)"],
+            stats["Minimum Value"], stats["Maximum Value"], stats["Absolute Maximum Value"],
+            stats["Range"], stats["25th Percentile"], stats["50th Percentile (Median)"],
             stats["75th Percentile"],
             stats["Normalized Displacement (50% Threshold)"],
             stats["Normalized Displacement (80% Threshold)"],
-            stats["[AI] Max Probability"],
-            stats["[AI] Percent Above 50%"],
-            stats["[AI] Percent Above 80%"],
-            stats["Accuracy (50% Threshold)"],
-            stats["Recall (50% Threshold)"],
-            stats["Precision (50% Threshold)"],
-            stats["Accuracy (80% Threshold)"],
-            stats["Recall (80% Threshold)"],
-            stats["Precision (80% Threshold)"]
-            
+            stats["[AI] Max Probability"], stats["[AI] Percent Above 50%"], stats["[AI] Percent Above 80%"],
+            stats["Accuracy (50% Threshold)"], stats["Recall (50% Threshold)"], stats["Precision (50% Threshold)"],
+            stats["Accuracy (80% Threshold)"], stats["Recall (80% Threshold)"], stats["Precision (80% Threshold)"]
         ])
+
+        # Upload to S3
+        s3.put_object(Bucket=bucket_name, Key=f"{s3_path}/m{model}_{site}_{beam}_stats.csv", Body=buffer.getvalue())
 
 
 def parse_args():
@@ -297,4 +412,6 @@ def parse_args():
 
 
 if __name__ == '__main__':
+    print("[DEBUG] Script started")
     main()
+    print("[DEBUG] Script finished")
